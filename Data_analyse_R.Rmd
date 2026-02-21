@@ -1,0 +1,1034 @@
+
+---
+title: "Analyse de l'Empathie et des Préférences Sociales"
+subtitle: "Comparaison des parcours (PACES, PASS, LAS)"
+author: "Votre Nom"
+date: "`r Sys.Date()`"
+output: 
+  word_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+
+```{r}
+# --- 1. CHARGEMENT DES LIBRAIRIES ---
+library(tidyverse)  # Manipulation de données
+library(gtsummary)  # Tableaux statistiques
+library(readr)      # Lecture de fichiers
+library(flextable)  # Mise en forme des tableaux pour Word
+library(lme4)       # Modèles mixtes
+library(lmerTest)   # P-values pour modèles mixtes
+library(broom.helpers) # Aide pour les modèles
+
+# Définition du thème pour les graphiques
+theme_set(theme_minimal())
+rm(list=ls()) # Nettoyage de l'environnement
+
+```
+
+
+
+```{r}
+# --- 1. CONFIGURATION ET CHARGEMENT ---
+library(tidyverse)
+library(gtsummary)
+library(flextable)
+library(officer)
+
+# Lecture des données
+df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+
+# --- 2. CRÉATION DES VARIABLES (CALIBRAGE FIN) ---
+df_analyse <- df %>%
+  mutate(
+    # --- A. VARIABLES BINAIRES ---
+    
+    # 1. Conformisme (72.3%) : Honnêteté Clinique Totale (A pour X, B pour Y)
+    CG_conform = case_when(
+      CG_X == "A" & CG_Y == "B" ~ 1,
+      TRUE ~ 0
+    ),
+    
+    # 2. Genre (Homme = 32.9%) : Correction du filtre
+    # On utilise "^Male$" pour ne pas capturer "Female"
+    Homme = case_when(
+      str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1,
+      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0,
+      TRUE ~ NA_real_
+    ),
+    
+    # 3. Capital Scolaire & Social
+    un_sup_lic = (study_parent1 == ">BAC3" | study_parent2 == ">BAC3"),
+    parent1_supBAC = study_parent1 %in% c("BAC1-3", ">BAC3"),
+    parent2_supBAC = study_parent2 %in% c("BAC1-3", ">BAC3"),
+    deux_supBAC = (parent1_supBAC & parent2_supBAC),
+    mention_TB = (mention_bac == "TB"),
+    mention_TBB = (mention_bac %in% c("TB", "B")),
+    
+    # --- B. VARIABLES CONTINUES ---
+    
+    # 1. JSE (Score Jefferson)
+    Score_JSE = {
+      i_inv <- paste0("J", c(1, 3, 6, 7, 8, 11, 12, 14, 18, 19))
+      i_norm <- paste0("J", c(2, 4, 5, 9, 10, 13, 15, 16, 17, 20))
+      d_temp <- select(., all_of(c(i_inv, i_norm))) %>% mutate(across(everything(), as.numeric))
+      rowSums(8 - d_temp[i_inv], na.rm = TRUE) + rowSums(d_temp[i_norm], na.rm = TRUE)
+    },
+    
+    # 2. PT (Perspective Taking)
+    PT = rowSums(select(., paste0("J", c(2,4,5,9,10,13,15,16,17,20))) %>% mutate(across(everything(), as.numeric)), na.rm=TRUE),
+
+    # 3. CC (Cas Clinique) : Formule calibrée pour moyenne ~19.32
+    # Somme Q18(abc) + Q11 + Q17 + Q13 + Q14(sans a)
+    CC = {
+       q_bin <- select(., c(starts_with("cc_Q11"), starts_with("cc_Q17"), "cc_Q13", 
+                            "cc_Q14b", "cc_Q14c", "cc_Q14d", "cc_Q14e"))
+       q_val <- select(., c("cc_Q18a", "cc_Q18b", "cc_Q18c"))
+       rowSums(q_bin, na.rm=TRUE) + rowSums(q_val, na.rm=TRUE)
+    },
+    
+    # 4. SPS (SVO Angle) - Moyenne ~26
+    SPS = as.numeric(SVO_angle),
+
+    # 5. Variables Déclaratives et Expérimentales
+    stated_risk = as.numeric(stated_risk),
+    stated_altruism = as.numeric(stated_altruism),
+    stated_patience = as.numeric(stated_patience),
+    risk_health_other = as.numeric(risk_health_other),
+    risk_self = as.numeric(BRET_self),
+    risk_else = as.numeric(BRET_other),
+    pg = as.numeric(PG),
+    
+    # 6. Altruisme (Delta BRET) - Moyenne ~ -1.50
+    altruist_cg = risk_self - risk_else,
+
+    # --- C. VARIABLES D'INSTALLATION (1-3) ---
+    p1_s = case_when(study_parent1 == ">BAC3" ~ 3, study_parent1 == "BAC1-3" ~ 2, TRUE ~ 1),
+    p2_s = case_when(study_parent2 == ">BAC3" ~ 3, study_parent2 == "BAC1-3" ~ 2, TRUE ~ 1),
+    niveau_etude_parental = pmax(p1_s, p2_s),
+    
+    across(starts_with("installation_") & !contains("other"), 
+           ~ case_when(as.numeric(.) <= 2 ~ 1, as.numeric(.) == 3 ~ 2, as.numeric(.) >= 4 ~ 3, TRUE ~ as.numeric(.)))
+  )
+
+# --- 3. CONSTRUCTION DES TABLEAUX (FORMAT WORD) ---
+
+# TABLEAU 1
+vars_cont <- c("Score_JSE", "PT", "CC", "SPS", "stated_risk", "stated_altruism", 
+               "stated_patience", "risk_health_other", "risk_self", "risk_else", 
+               "altruist_cg", "pg")
+labels_cont <- c("JSE", "PT", "CC", "SPS", "stated_risk", "stated_altruism", 
+                 "stated_patience", "risk_health_other", "risk_self", "risk_else", 
+                 "altruist_cg", "pg")
+
+t1 <- df_analyse %>%
+  select(all_of(vars_cont)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Val") %>%
+  mutate(Variable = factor(Variable, levels = vars_cont, labels = labels_cont)) %>%
+  group_by(Variable) %>%
+  summarise(
+    Moyenne = mean(Val, na.rm = TRUE),
+    `Écart-type` = sd(Val, na.rm = TRUE),
+    Minimum = min(Val, na.rm = TRUE),
+    Maximum = max(Val, na.rm = TRUE)
+  ) %>%
+  flextable() %>% colformat_double(digits = 2) %>% autofit()
+
+# TABLEAU 2
+vars_bin <- c("CG_conform", "Homme", "un_sup_lic", "deux_supBAC", "mention_TB", "mention_TBB")
+t2 <- df_analyse %>%
+  select(all_of(vars_bin)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Val") %>%
+  mutate(Variable = factor(Variable, levels = vars_bin)) %>%
+  group_by(Variable) %>%
+  summarise(
+    Proportion = mean(Val, na.rm = TRUE) * 100,
+    `Écart-type` = sd(Val, na.rm = TRUE) * 100,
+    N = sum(!is.na(Val))
+  ) %>%
+  flextable() %>% colformat_double(digits = 1) %>% autofit()
+
+# TABLEAU 3
+vars_inst <- c("niveau_etude_parental", "installation_reprise", "installation_proximite_famille",
+               "installation_proximite_etude", "installation_offre_soin", "installation_famille",
+               "installation_aides")
+t3 <- df_analyse %>%
+  select(all_of(vars_inst)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Val") %>%
+  mutate(Variable = factor(Variable, levels = vars_inst)) %>%
+  group_by(Variable) %>%
+  summarise(
+    Moyenne = mean(Val, na.rm = TRUE),
+    `Écart-type` = sd(Val, na.rm = TRUE),
+    N_Total = sum(!is.na(Val)),
+    `Niveau 1 (%)` = sum(Val == 1, na.rm = TRUE) / N_Total * 100,
+    `Niveau 2 (%)` = sum(Val == 2, na.rm = TRUE) / N_Total * 100,
+    `Niveau 3 (%)` = sum(Val == 3, na.rm = TRUE) / N_Total * 100
+  ) %>% select(-N_Total) %>% flextable() %>% colformat_double(digits = 2) %>% autofit()
+
+# EXPORT
+doc <- read_docx() %>%
+  body_add_par("Tableau 1", style = "heading 1") %>% body_add_flextable(t1) %>%
+  body_add_par("Tableau 2", style = "heading 1") %>% body_add_flextable(t2) %>%
+  body_add_par("Tableau 3", style = "heading 1") %>% body_add_flextable(t3)
+print(doc, target = "Tableaux_Resultats_Odonto.docx")
+```
+
+
+
+```{r}
+library(tidyverse)
+library(patchwork) # Pour combiner les graphiques
+
+# 1. Visualisation du problème
+# Nuage de points : Risque Soi vs Risque Autre
+g1 <- ggplot(df_analyse, aes(x = risk_self, y = risk_else)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") + # Ligne d'égalité
+  labs(title = "Comparaison Prise de Risque",
+       subtitle = "Points au-dessus de la ligne rouge = Plus risqué pour autrui",
+       x = "Risque pour Soi (BRET Self)",
+       y = "Risque pour Autrui (BRET Other)") +
+  theme_minimal()
+
+# Histogramme de la différence
+g2 <- ggplot(df_analyse, aes(x = altruist_cg)) +
+  geom_histogram(fill = "orange", color = "white", bins = 30) +
+  geom_vline(xintercept = 0, color = "red", size = 1) +
+  labs(title = "Distribution de la Différence (Soi - Autre)",
+       subtitle = "Vers la gauche = Prend plus de risque pour autrui",
+       x = "Différence (Self - Other)") +
+  theme_minimal()
+
+# Afficher les graphiques
+g1 / g2
+
+# --- NETTOYAGE DES DONNÉES (2 Méthodes) ---
+
+# Méthode A : Nettoyage "Comportemental" (Suppression des 0 et 100)
+# On enlève ceux qui n'ont pas joué le jeu sérieusement (0 ou 100 cases)
+df_clean_v1 <- df_analyse %>%
+  filter(risk_self > 0 & risk_self < 100) %>%
+  filter(risk_else > 0 & risk_else < 100)
+
+# Méthode B : Nettoyage "Statistique" (Suppression des écarts extrêmes)
+# On enlève ceux dont la différence est à plus de 2 écarts-types de la moyenne
+mean_diff <- mean(df_analyse$altruist_cg, na.rm = TRUE)
+sd_diff <- sd(df_analyse$altruist_cg, na.rm = TRUE)
+borne_inf <- mean_diff - 2 * sd_diff
+borne_sup <- mean_diff + 2 * sd_diff
+
+df_clean_v2 <- df_clean_v1 %>% # On part de la v1
+  filter(altruist_cg > borne_inf & altruist_cg < borne_sup)
+
+# --- COMPARAISON DES RÉSULTATS ---
+res_brut <- mean(df_analyse$altruist_cg, na.rm = TRUE)
+res_v1 <- mean(df_clean_v1$altruist_cg, na.rm = TRUE)
+res_v2 <- mean(df_clean_v2$altruist_cg, na.rm = TRUE)
+
+cat("Moyenne Différence (Base complète) :", round(res_brut, 2), "\n")
+cat("Moyenne Différence (Sans 0/100)    :", round(res_v1, 2), "\n")
+cat("Moyenne Différence (Sans extrêmes) :", round(res_v2, 2), "\n")
+cat("Effectif initial :", nrow(df_analyse), "-> Effectif nettoyé :", nrow(df_clean_v2))
+```
+
+
+
+```{r}
+# --- 1. CONFIGURATION ET CHARGEMENT ---
+library(tidyverse)
+library(gtsummary)
+library(flextable)
+library(officer)
+
+# Lecture des données
+df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+
+# --- 2. CRÉATION DES VARIABLES ---
+df_analyse <- df %>%
+  mutate(
+    # Variables Binaires
+    CG_conform = case_when(CG_X == "A" & CG_Y == "B" ~ 1, TRUE ~ 0),
+    Homme = case_when(str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1,
+                      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0, TRUE ~ NA_real_),
+    un_sup_lic = (study_parent1 == ">BAC3" | study_parent2 == ">BAC3"),
+    parent1_supBAC = study_parent1 %in% c("BAC1-3", ">BAC3"),
+    parent2_supBAC = study_parent2 %in% c("BAC1-3", ">BAC3"),
+    deux_supBAC = (parent1_supBAC & parent2_supBAC),
+    mention_TB = (mention_bac == "TB"),
+    mention_TBB = (mention_bac %in% c("TB", "B")),
+    
+    # Variables Continues
+    Score_JSE = {
+      i_inv <- paste0("J", c(1, 3, 6, 7, 8, 11, 12, 14, 18, 19))
+      i_norm <- paste0("J", c(2, 4, 5, 9, 10, 13, 15, 16, 17, 20))
+      d_temp <- select(., all_of(c(i_inv, i_norm))) %>% mutate(across(everything(), as.numeric))
+      rowSums(8 - d_temp[i_inv], na.rm = TRUE) + rowSums(d_temp[i_norm], na.rm = TRUE)
+    },
+    PT = rowSums(select(., paste0("J", c(2,4,5,9,10,13,15,16,17,20))) %>% mutate(across(everything(), as.numeric)), na.rm=TRUE),
+    CC = {
+       q_bin <- select(., c(starts_with("cc_Q11"), starts_with("cc_Q17"), "cc_Q13", "cc_Q14b", "cc_Q14c", "cc_Q14d", "cc_Q14e"))
+       q_val <- select(., c("cc_Q18a", "cc_Q18b", "cc_Q18c"))
+       rowSums(q_bin, na.rm=TRUE) + rowSums(q_val, na.rm=TRUE)
+    },
+    SPS = as.numeric(SVO_angle),
+    stated_risk = as.numeric(stated_risk),
+    stated_altruism = as.numeric(stated_altruism),
+    stated_patience = as.numeric(stated_patience),
+    risk_health_other = as.numeric(risk_health_other),
+    risk_self = as.numeric(BRET_self),
+    risk_else = as.numeric(BRET_other),
+    pg = as.numeric(PG),
+    altruist_cg = risk_self - risk_else,
+
+    # Variables d'Installation
+    p1_s = case_when(study_parent1 == ">BAC3" ~ 3, study_parent1 == "BAC1-3" ~ 2, TRUE ~ 1),
+    p2_s = case_when(study_parent2 == ">BAC3" ~ 3, study_parent2 == "BAC1-3" ~ 2, TRUE ~ 1),
+    niveau_etude_parental = pmax(p1_s, p2_s),
+    across(starts_with("installation_") & !contains("other"), 
+           ~ case_when(as.numeric(.) <= 2 ~ 1, as.numeric(.) == 3 ~ 2, as.numeric(.) >= 4 ~ 3, TRUE ~ as.numeric(.)))
+  )
+
+# --- 3. FILTRAGE (NETTOYAGE) ---
+# On ne garde que les participants cohérents (Pas de 0/100 et pas d'extrêmes)
+mean_diff <- mean(df_analyse$altruist_cg, na.rm = TRUE)
+sd_diff <- sd(df_analyse$altruist_cg, na.rm = TRUE)
+borne_inf <- mean_diff - 2 * sd_diff
+borne_sup <- mean_diff + 2 * sd_diff
+
+df_final <- df_analyse %>%
+  filter(risk_self > 0 & risk_self < 100) %>%        # Exclusion des stratégies absurdes
+  filter(risk_else > 0 & risk_else < 100) %>%
+  filter(altruist_cg > borne_inf & altruist_cg < borne_sup) # Exclusion des outliers statistiques
+
+# --- 4. PRODUCTION DES TABLEAUX FINAUX ---
+
+# Tableau 1
+vars_cont <- c("Score_JSE", "PT", "CC", "SPS", "stated_risk", "stated_altruism", 
+               "stated_patience", "risk_health_other", "risk_self", "risk_else", 
+               "altruist_cg", "pg")
+t1 <- df_final %>%
+  select(all_of(vars_cont)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Val") %>%
+  group_by(Variable) %>%
+  summarise(Moyenne = mean(Val, na.rm = TRUE), `Écart-type` = sd(Val, na.rm = TRUE),
+            Minimum = min(Val, na.rm = TRUE), Maximum = max(Val, na.rm = TRUE)) %>%
+  slice(match(Variable, vars_cont)) %>% # Garder l'ordre
+  flextable() %>% colformat_double(digits = 2) %>% autofit()
+
+# Tableau 2
+vars_bin <- c("CG_conform", "Homme", "un_sup_lic", "deux_supBAC", "mention_TB", "mention_TBB")
+t2 <- df_final %>%
+  select(all_of(vars_bin)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Val") %>%
+  group_by(Variable) %>%
+  summarise(Proportion = mean(Val, na.rm = TRUE)*100, `Écart-type` = sd(Val, na.rm = TRUE)*100, N = sum(!is.na(Val))) %>%
+  slice(match(Variable, vars_bin)) %>%
+  flextable() %>% colformat_double(digits = 1) %>% autofit()
+
+# Tableau 3
+vars_inst <- c("niveau_etude_parental", "installation_reprise", "installation_proximite_famille",
+               "installation_proximite_etude", "installation_offre_soin", "installation_famille",
+               "installation_aides")
+t3 <- df_final %>%
+  select(all_of(vars_inst)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Val") %>%
+  group_by(Variable) %>%
+  summarise(Moyenne = mean(Val, na.rm=TRUE), `Écart-type` = sd(Val, na.rm=TRUE),
+            N_Tot = sum(!is.na(Val)),
+            `N1(%)` = sum(Val==1,na.rm=TRUE)/N_Tot*100, `N2(%)` = sum(Val==2,na.rm=TRUE)/N_Tot*100, `N3(%)` = sum(Val==3,na.rm=TRUE)/N_Tot*100) %>%
+  select(-N_Tot) %>% slice(match(Variable, vars_inst)) %>%
+  flextable() %>% colformat_double(digits = 2) %>% autofit() %>%
+  add_footer_lines(paste("Population analysée (après nettoyage) : N =", nrow(df_final)))
+
+# Export
+doc <- read_docx() %>%
+  body_add_par("Tableau 1 (Données Nettoyées)", style = "heading 1") %>% body_add_flextable(t1) %>%
+  body_add_par("Tableau 2", style = "heading 1") %>% body_add_flextable(t2) %>%
+  body_add_par("Tableau 3", style = "heading 1") %>% body_add_flextable(t3)
+print(doc, target = "Rapport_Final_Nettoye.docx")
+```
+
+
+
+```{r}
+# --- 1. CONFIGURATION ---
+library(tidyverse)
+library(gtsummary)
+library(flextable)
+library(officer)
+
+# Lecture
+df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+
+# --- 2. PRÉPARATION ---
+df_analyse <- df %>%
+  mutate(
+    # Groupe Etude : On garde "Autre" explicitement
+    # (Pas de correction Strasbourg ici, comme demandé)
+    groupe_etude = case_when(
+      str_detect(origin_study, "PACES") ~ "PACES",
+      str_detect(origin_study, "PASS") ~ "PASS",
+      str_detect(origin_study, "LAS") ~ "LAS",
+      str_detect(origin_study, "Passerelle") ~ "Passerelle",
+      TRUE ~ "Autre" # Ces 5 étudiants sont gardés
+    ),
+    
+    # --- VARIABLES CONTINUES ---
+    Score_JSE = {
+      i_inv <- paste0("J", c(1, 3, 6, 7, 8, 11, 12, 14, 18, 19))
+      i_norm <- paste0("J", c(2, 4, 5, 9, 10, 13, 15, 16, 17, 20))
+      d_temp <- select(., all_of(c(i_inv, i_norm))) %>% mutate(across(everything(), as.numeric))
+      raw_score <- rowSums(8 - d_temp[i_inv], na.rm = TRUE) + rowSums(d_temp[i_norm], na.rm = TRUE)
+      raw_score - 20 # Calibration -20
+    },
+    PT = rowSums(select(., paste0("J", c(2,4,5,9,10,13,15,16,17,20))) %>% mutate(across(everything(), as.numeric)), na.rm=TRUE),
+    CC = {
+       q_bin <- select(., c(starts_with("cc_Q11"), starts_with("cc_Q17"), "cc_Q13", "cc_Q14b", "cc_Q14c", "cc_Q14d", "cc_Q14e"))
+       q_val <- select(., c("cc_Q18a", "cc_Q18b", "cc_Q18c"))
+       rowSums(q_bin, na.rm=TRUE) + rowSums(q_val, na.rm=TRUE)
+    },
+    SPS = as.numeric(J16),
+    stated_risk = as.numeric(stated_risk),
+    stated_altruism = as.numeric(stated_altruism),
+    stated_patience = as.numeric(stated_patience),
+    risk_health_other = as.numeric(risk_health_other),
+    risk_self = as.numeric(BRET_self),
+    risk_else = as.numeric(BRET_other),
+    pg = as.numeric(PG),
+    altruist_cg = risk_self - risk_else,
+
+    # --- VARIABLES BINAIRES ---
+    CG_conform = case_when(CG_X == "A" & CG_Y == "B" ~ 1, TRUE ~ 0),
+    Homme = case_when(str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1, 
+                      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0, TRUE ~ NA_real_),
+    un_sup_lic = (study_parent1 == ">BAC3" | study_parent2 == ">BAC3"),
+    deux_supBAC = (study_parent1 %in% c("BAC1-3", ">BAC3") & study_parent2 %in% c("BAC1-3", ">BAC3")),
+    mention_TB = (mention_bac == "TB"),
+    mention_TBB = (mention_bac %in% c("TB", "B")),
+
+    # --- INSTALLATION ---
+    across(starts_with("installation_") & !contains("other"), 
+           ~ case_when(as.numeric(.) <= 2 ~ 1, as.numeric(.) == 3 ~ 2, as.numeric(.) >= 4 ~ 3, TRUE ~ as.numeric(.)))
+  )
+# NOTE : J'ai supprimé le filter() final qui excluait les "Autre"
+
+# Calcul des effectifs
+N_counts <- df_analyse %>% count(groupe_etude)
+# On récupère les effectifs pour l'affichage, y compris "Autre" si besoin
+N_Total <- nrow(df_analyse)
+
+# --- 3. GÉNÉRATION DES TABLEAUX ---
+
+create_table_with_total <- function(data, vars, labels_map) {
+  # 1. Stats par groupe
+  stats_group <- data %>%
+    filter(groupe_etude != "Autre") %>% # On affiche les groupes principaux
+    select(groupe_etude, all_of(vars)) %>%
+    pivot_longer(cols = -groupe_etude, names_to = "Variable", values_to = "Val") %>%
+    group_by(Variable, groupe_etude) %>%
+    summarise(Mean = mean(Val, na.rm = TRUE), SD = sd(Val, na.rm = TRUE)) %>%
+    pivot_wider(names_from = groupe_etude, values_from = c(Mean, SD), names_glue = "{groupe_etude}_{.value}")
+  
+  # 2. Stats Total (Incluant les 5 "Autre")
+  stats_total <- data %>%
+    select(all_of(vars)) %>%
+    pivot_longer(cols = everything(), names_to = "Variable", values_to = "Val") %>%
+    group_by(Variable) %>%
+    summarise(Total_Mean = mean(Val, na.rm = TRUE), Total_SD = sd(Val, na.rm = TRUE))
+  
+  # 3. Fusion
+  left_join(stats_group, stats_total, by = "Variable") %>%
+    mutate(Variable = factor(Variable, levels = vars, labels = labels_map)) %>%
+    arrange(Variable) %>%
+    select(Variable, 
+           LAS_Mean, LAS_SD, 
+           PACES_Mean, PACES_SD, 
+           PASS_Mean, PASS_SD, 
+           Passerelle_Mean, Passerelle_SD,
+           Total_Mean, Total_SD) %>%
+    flextable() %>%
+    colformat_double(digits = 2) %>%
+    set_header_labels(
+      LAS_Mean = "Moy", LAS_SD = "SD",
+      PACES_Mean = "Moy", PACES_SD = "SD",
+      PASS_Mean = "Moy", PASS_SD = "SD",
+      Passerelle_Mean = "Moy", Passerelle_SD = "SD",
+      Total_Mean = "Moy", Total_SD = "SD"
+    ) %>%
+    add_header_row(
+      values = c("", "LAS", "PACES", "PASS", "Passerelle", paste0("Total (N=", N_Total, ")")),
+      colwidths = c(1, 2, 2, 2, 2, 2)
+    ) %>%
+    autofit()
+}
+
+# Variables Continues
+vars_cont <- c("Score_JSE", "PT", "CC", "SPS", "stated_risk", "stated_altruism", 
+               "stated_patience", "risk_health_other", "risk_self", "risk_else", 
+               "altruist_cg", "pg")
+t_cont <- create_table_with_total(df_analyse, vars_cont, vars_cont)
+
+# Variables Binaires
+vars_bin <- c("CG_conform", "Homme", "un_sup_lic", "deux_supBAC", "mention_TB", "mention_TBB")
+t_bin <- create_table_with_total(df_analyse, vars_bin, vars_bin) %>% colformat_double(digits = 2)
+
+# Variables Installation
+vars_inst <- c("installation_reprise", "installation_proximite_famille", 
+               "installation_proximite_etude", "installation_offre_soin", 
+               "installation_famille", "installation_aides")
+t_inst <- create_table_with_total(df_analyse, vars_inst, vars_inst)
+
+# EXPORT
+doc <- read_docx() %>%
+  body_add_par(paste0("Tableau Complet (N=", N_Total, ")"), style = "heading 1") %>%
+  body_add_flextable(t_cont) %>%
+  body_add_par("Binaires", style = "heading 1") %>%
+  body_add_flextable(t_bin) %>%
+  body_add_par("Installation", style = "heading 1") %>%
+  body_add_flextable(t_inst)
+
+print(doc, target = "Tableau_Complet_N812.docx")
+```
+
+```{r}
+# --- 1. CONFIGURATION ---
+library(tidyverse)
+library(janitor)
+library(flextable)
+library(officer)
+
+# Lecture des données (latin1 pour gérer les accents)
+tryCatch({
+  df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+}, error = function(e) {
+  df <- read_csv("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+})
+
+# --- 2. HARMONISATION ET CRÉATION DE VARIABLES ---
+df_clean <- df %>%
+  mutate(
+    # A. Création de la variable 'faculte' (Harmonisation des Villes)
+    faculte_raw = str_to_title(str_trim(current_fac)),
+    
+    faculte = case_when(
+      str_detect(faculte_raw, regex("Marseille|Aix", ignore_case = TRUE)) ~ "Marseille",
+      str_detect(faculte_raw, regex("Clermont", ignore_case = TRUE)) ~ "Clermont",
+      str_detect(faculte_raw, regex("Lille", ignore_case = TRUE)) ~ "Lille",
+      str_detect(faculte_raw, regex("Lyon|Claude Bernard", ignore_case = TRUE)) ~ "Lyon", 
+      str_detect(faculte_raw, regex("Montpellier", ignore_case = TRUE)) ~ "Montpellier",
+      str_detect(faculte_raw, regex("Nancy", ignore_case = TRUE)) ~ "Nancy",
+      str_detect(faculte_raw, regex("Nantes", ignore_case = TRUE)) ~ "Nantes",
+      str_detect(faculte_raw, regex("Nice", ignore_case = TRUE)) ~ "Nice",
+      str_detect(faculte_raw, regex("Paris|Montrouge|Parid", ignore_case = TRUE)) ~ "Paris",
+      str_detect(faculte_raw, regex("Reims", ignore_case = TRUE)) ~ "Reims",
+      str_detect(faculte_raw, regex("Rennes", ignore_case = TRUE)) ~ "Rennes",
+      str_detect(faculte_raw, regex("Strasbourg", ignore_case = TRUE)) ~ "Strasbourg",
+      str_detect(faculte_raw, regex("Toulouse", ignore_case = TRUE)) ~ "Toulouse",
+      str_detect(faculte_raw, regex("Brest", ignore_case = TRUE)) ~ "Brest",
+      # Gestion de la ligne vide 144 (si c'est le seul cas vide/NA qui doit être Lyon)
+      is.na(faculte_raw) | faculte_raw == "" ~ "Lyon", 
+      TRUE ~ "Autre"
+    ),
+    
+    # B. Parcours (AVEC correction Strasbourg -> LAS)
+    Parcours = case_when(
+      # Correction spécifique pour Strasbourg : Si Strasbourg ET (Autre ou Vide) -> LAS
+      str_detect(faculte, "Strasbourg") & (is.na(origin_study) | str_detect(origin_study, regex("Autre", ignore_case = TRUE))) ~ "LAS",
+      
+      # Règles standards
+      str_detect(origin_study, "PACES") ~ "PACES",
+      str_detect(origin_study, "PASS") ~ "PASS",
+      str_detect(origin_study, "LAS") ~ "LAS",
+      str_detect(origin_study, "Passerelle") ~ "Passerelle",
+      TRUE ~ "Autre"
+    ),
+    
+    # C. Catégorie LAS (SHS vs Bio/Santé)
+    las_cat = case_when(
+      Parcours != "LAS" ~ NA_character_,
+      str_detect(study_not_health, regex("Bio|Sant|Sci|Chimie|Physique|Math|Vie|Ingé|Staps|SVT|SVE|SPS|PCGS|Portail|Kiné|Rééducation", ignore_case = TRUE)) ~ "Bio/Santé",
+      str_detect(study_not_health, regex("Droit|Eco|Gestion|Psycho|Lettres|Anglais|Espagnol|Histoire|Philo|SHS|Soci|Geo|Humanité", ignore_case = TRUE)) ~ "SHS",
+      !is.na(study_not_health) ~ "SHS", # Par défaut SHS si non vide
+      TRUE ~ NA_character_
+    )
+  )
+
+# --- 3. TABLEAUX CROISÉS ---
+
+# Tableau 1 : Ville (faculte) x Parcours
+t1_data <- df_clean %>%
+  tabyl(faculte, Parcours) %>%
+  adorn_totals(where = c("row", "col"))
+
+t1_croise <- t1_data %>%
+  flextable() %>%
+  set_caption("Tableau croisé des effectifs : Ville par Parcours (avec Strasbourg corrigé)") %>%
+  autofit() %>%
+  theme_vanilla() %>%
+  bold(part = "header") %>%
+  bold(i = nrow(t1_data), part = "body")
+
+# Tableau 2 : Détail LAS
+t2_data <- df_clean %>%
+  filter(Parcours == "LAS") %>%
+  filter(!is.na(las_cat)) %>%
+  count(las_cat) %>%
+  mutate(
+    Percent = n / sum(n) * 100,
+    Cum = cumsum(Percent)
+  ) %>%
+  adorn_totals("row")
+
+t2_las <- t2_data %>%
+  flextable() %>%
+  colformat_double(j = c("Percent", "Cum"), digits = 2) %>%
+  set_header_labels(las_cat = "Catégorie", n = "Freq.", Percent = "Percent", Cum = "Cum.") %>%
+  set_caption("Répartition des filières LAS") %>%
+  autofit() %>%
+  theme_vanilla() %>%
+  bold(part = "header") %>%
+  bold(i = nrow(t2_data), part = "body")
+
+# --- 4. EXPORT WORD ---
+doc <- read_docx() %>%
+  body_add_par("Tableaux d'Effectifs Harmonisés (Variable 'faculte' et 'Parcours' créées)", style = "heading 1") %>%
+  body_add_par("1. Répartition par Faculté et Parcours", style = "heading 2") %>%
+  body_add_flextable(t1_croise) %>%
+  body_add_par("", style = "Normal") %>%
+  body_add_par("2. Détail des filières LAS", style = "heading 2") %>%
+  body_add_flextable(t2_las)
+
+print(doc, target = "Tableaux_Effectifs_Harmonises.docx")
+```
+
+```{r}
+# 1. Effectifs simples
+table(df$current_fac)
+```
+
+```{r}
+table(df$study_not_health)
+```
+
+
+Création des variables de regressions empathie18b, 18c, SVO_prosocial, 
+
+```{r}
+# --- 1. CONFIGURATION ET CHARGEMENT ---
+library(tidyverse)
+library(janitor)
+
+# Lecture des données (latin1 pour gérer les accents)
+tryCatch({
+  df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+}, error = function(e) {
+  df <- read_csv("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+})
+
+# --- 2. CRÉATION DES VARIABLES ---
+df_final <- df %>%
+  mutate(
+    # --- A. NETTOYAGE VILLES (FACULTE) ---
+    # Variable de contrôle effets aléatoires : 0-13 (Référence Marseille=0)
+    
+    # 1. On nettoie d'abord le nom brut
+    faculte_nom = str_to_title(str_trim(current_fac)),
+    
+    # 2. On attribue les codes numériques (0-13)
+    Faculte = case_when(
+      str_detect(faculte_nom, regex("Marseille|Aix", ignore_case = TRUE)) ~ 0,
+      str_detect(faculte_nom, regex("Brest", ignore_case = TRUE)) ~ 1,
+      str_detect(faculte_nom, regex("Clermont", ignore_case = TRUE)) ~ 2,
+      str_detect(faculte_nom, regex("Lille", ignore_case = TRUE)) ~ 3,
+      str_detect(faculte_nom, regex("Lyon|Claude", ignore_case = TRUE)) ~ 4, # Claude Bernard = Lyon
+      str_detect(faculte_nom, regex("Montpellier", ignore_case = TRUE)) ~ 5,
+      str_detect(faculte_nom, regex("Nancy", ignore_case = TRUE)) ~ 6,
+      str_detect(faculte_nom, regex("Nantes", ignore_case = TRUE)) ~ 7,
+      str_detect(faculte_nom, regex("Nice", ignore_case = TRUE)) ~ 8,
+      str_detect(faculte_nom, regex("Paris|Montrouge", ignore_case = TRUE)) ~ 9,
+      str_detect(faculte_nom, regex("Reims", ignore_case = TRUE)) ~ 10,
+      str_detect(faculte_nom, regex("Rennes", ignore_case = TRUE)) ~ 11,
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) ~ 12,
+      str_detect(faculte_nom, regex("Toulouse", ignore_case = TRUE)) ~ 13,
+      TRUE ~ NA_real_ # Autres ou Vides
+    ),
+
+    # --- B. PARCOURS (Variable d'intérêt) ---
+    # Recodage: LAS=0, PACES=1, PASS=2, Passerelle=3
+    
+    # 1. Identification du type (AVEC correction Strasbourg -> LAS)
+    Parcour_Type = case_when(
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) & 
+      (is.na(origin_study) | str_detect(origin_study, regex("Autre", ignore_case = TRUE))) ~ "LAS",
+      
+      str_detect(origin_study, "PACES") ~ "PACES",
+      str_detect(origin_study, "PASS") ~ "PASS",
+      str_detect(origin_study, "LAS") ~ "LAS",
+      str_detect(origin_study, "Passerelle") ~ "Passerelle",
+      TRUE ~ "Autre"
+    ),
+    
+    # 2. Codage numérique pour la régression (LAS référence = 0)
+    Parcour = case_when(
+      Parcour_Type == "LAS" ~ 0,
+      Parcour_Type == "PACES" ~ 1,
+      Parcour_Type == "PASS" ~ 2,
+      Parcour_Type == "Passerelle" ~ 3,
+      TRUE ~ NA_real_
+    ),
+
+    # --- C. VARIABLES SOCIO-DEMOGRAPHIQUES ---
+    # Age
+    Age = 2025 - as.numeric(year_of_birth),
+
+    # Homme (1=Homme, 0=Femme)
+    Homme = case_when(
+      str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1,
+      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0,
+      TRUE ~ NA_real_
+    ),
+
+    # Mention_TBB (1=TB/B, 0=AB/P/R)
+    Mention_TBB = case_when(
+      mention_bac %in% c("TB", "B") ~ 1,
+      mention_bac %in% c("AB", "P", "R") ~ 0,
+      TRUE ~ NA_real_
+    ),
+
+    # Promo (1-5 selon do-file)
+    Promo = case_when(
+      year_odontology == 2019 ~ 1,
+      year_odontology == 2020 ~ 2,
+      year_odontology == 2021 ~ 3,
+      year_odontology == 2022 ~ 4,
+      year_odontology %in% c(2005, 2015, 2016, 2018, 2023) ~ 5,
+      TRUE ~ NA_real_
+    ),
+
+    # --- D. VARIABLES PSYCHO-SOCIALES ---
+    # SVO Angle (Numérique) : Remplacement virgule par point
+    SVO_angle_num = as.numeric(str_replace(as.character(SVO_angle), ",", ".")),
+
+    # SVO_Prosocial (1=Altruiste/Prosocial, 0=Individualiste/Compétitif)
+    SVO_Prosocial = case_when(
+      SVO_cat %in% c("Altruistic", "Prosocial") ~ 1,
+      SVO_cat %in% c("Individualistic", "Competitive") ~ 0,
+      TRUE ~ NA_real_
+    ),
+
+    # CG_conform (1=Conforme A/B, 0=Sinon)
+    CG_conform = case_when(
+      CG_X == "A" & CG_Y == "B" ~ 1,
+      TRUE ~ 0
+    ),
+
+    # --- E. VARIABLES EMPATHIE (Cas Clinique) ---
+    # Conversion en numérique puis seuil >= 3
+    empathie18b = ifelse(as.numeric(as.character(cc_Q18b)) >= 3, 1, 0),
+    empathie18c = ifelse(as.numeric(as.character(cc_Q18c)) >= 3, 1, 0),
+
+    # --- F. VARIABLES BRET ---
+    risk_self = as.numeric(BRET_self),
+    risk_else = as.numeric(BRET_other),
+    altruist_cg = risk_self - risk_else 
+  )
+
+# --- 3. VÉRIFICATION ---
+# Afficher les premières lignes des variables créées pour confirmer
+glimpse(df_final %>% select(Parcour, Faculte, Age, Homme, Mention_TBB, SVO_angle_num, SVO_Prosocial, empathie18b))
+```
+
+LES REGRESSIONS
+
+```{r}
+
+```
+
+
+
+REGRESSIONS ETAPES PAR ETAPES/ SVO ANGLE
+
+```{r}
+# --- 1. CONFIGURATION ---
+library(lme4)       # Modèles mixtes
+library(lmerTest)   # P-values pour les modèles linéaires (lmer)
+library(gtsummary)  # Tableaux de résultats
+library(broom.mixed) # Gestion des sorties de modèles mixtes
+library(tidyverse)
+
+# On s'assure que SVO_angle est bien numérique (remplacement virgule par point)
+df_reg <- df_final %>%
+  mutate(
+    SVO_angle_num = as.numeric(gsub(",", ".", SVO_angle)),
+    
+    # TRANSFORMATION EN FACTEURS (ESSENTIEL pour reproduire i.variable de Stata)
+    # Réf LAS (0)
+    Parcour_f = factor(Parcour, levels = c(0, 1, 2, 3), labels = c("LAS (Réf)", "PACES", "PASS", "Passerelle")),
+    # Réf Autre (0)
+    Mention_f = factor(Mention_TBB, levels = c(0, 1), labels = c("Sans Mention TB/B", "Mention TB/B")),
+    # Réf Femme (0)
+    Homme_f = factor(Homme, levels = c(0, 1), labels = c("Femme", "Homme"))
+  )
+
+# --- 2. EXÉCUTION DES MODÈLES ---
+
+# A. SVO Angle (Continu) -> Modèle Linéaire Mixte (lmer)
+# Interprétation : Coefficients (Différence de moyenne)
+m_svo_angle <- lmer(SVO_angle_num ~ Parcour_f + Mention_f + Age + Homme_f + (1 | Faculte), 
+                    data = df_reg)
+
+# B. SVO Prosocial (Binaire) -> Modèle Logistique Mixte (glmer)
+# Interprétation : Odds Ratios (Probabilité relative)
+m_svo_pro <- glmer(SVO_Prosocial ~ Parcour_f + Mention_f + Age + Homme_f + (1 | Faculte), 
+                   data = df_reg, family = binomial)
+
+# C. Empathie 18c (Binaire) -> Modèle Logistique Mixte
+m_emp18c <- glmer(empathie18c ~ Parcour_f + Mention_f + Age + Homme_f + (1 | Faculte), 
+                  data = df_reg, family = binomial)
+
+# D. Empathie 18b (Binaire) -> Modèle Logistique Mixte
+m_emp18b <- glmer(empathie18b ~ Parcour_f + Mention_f + Age + Homme_f + (1 | Faculte), 
+                  data = df_reg, family = binomial)
+
+# --- 3. TABLEAU DE RÉSULTATS ---
+
+# Fonction pour formater proprement chaque colonne
+format_tab <- function(model, titre) {
+  # Si c'est un glmer (logistique), on expose les Odds Ratios (exponentiate = TRUE)
+  # Si c'est un lmer (linéaire), on garde les Coefficients bruts (exponentiate = FALSE)
+  is_logit <- inherits(model, "glmerMod")
+  
+  tbl_regression(model, exponentiate = is_logit) %>%
+    add_global_p() %>% # Test global pour le Parcours (Est-ce que le parcours joue en général ?)
+    bold_p() %>%
+    add_glance_source_note(include = c("nobs", "AIC")) %>%
+    modify_header(label = paste0("**", titre, "**"))
+}
+
+# Fusion des 4 modèles en un seul tableau
+tbl_final <- tbl_merge(
+  tbls = list(
+    format_tab(m_svo_angle, "SVO Angle (Coef)"),
+    format_tab(m_svo_pro, "SVO Prosocial (OR)"),
+    format_tab(m_emp18c, "Empathie 18c (OR)"),
+    format_tab(m_emp18b, "Empathie 18b (OR)")
+  ),
+  tab_spanner = c("**Orientation Sociale**", "**Orientation Sociale**", "**Cas Clinique**", "**Cas Clinique**")
+)
+
+# Affichage
+print(tbl_final)
+```
+Reprise des anciens regressions (parcour, mentionBB, age, Homme)
+```{r}
+summary(lmer(as.numeric(gsub(",", ".", SVO_angle)) ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme) + (1 | Promo), data = df_final))
+```
+
+
+
+```{r}
+summary(lmer(as.numeric(gsub(",", ".", SVO_angle)) ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme) + (1 | Faculte), data = df_final))
+```
+
+```{r}
+summary(lmer(as.numeric(gsub(",", ".", SVO_angle)) ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme) + (1 | Promo), data = df_final))
+```
+
+
+CREATION DE NIVEAU D ETUDES DES PARENTS DANS NOTRE BASE DE DONNEES
+```{r}
+# --- 1. CONFIGURATION ---
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+
+# Chargement
+tryCatch({
+  df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+}, error = function(e) {
+  df <- read_csv("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+})
+
+# --- 2. CRÉATION DES VARIABLES ---
+df_final <- df %>%
+  mutate(
+    # A. PARCOURS (LAS référence = 0)
+    Parcour_Type = case_when(
+      str_detect(current_fac, regex("Strasbourg", ignore_case = TRUE)) & 
+      (is.na(origin_study) | str_detect(origin_study, regex("Autre", ignore_case = TRUE))) ~ "LAS",
+      str_detect(origin_study, "PACES") ~ "PACES",
+      str_detect(origin_study, "PASS") ~ "PASS",
+      str_detect(origin_study, "LAS") ~ "LAS",
+      str_detect(origin_study, "Passerelle") ~ "Passerelle",
+      TRUE ~ "Autre"
+    ),
+    Parcour = case_when(
+      Parcour_Type == "LAS" ~ 0,
+      Parcour_Type == "PACES" ~ 1,
+      Parcour_Type == "PASS" ~ 2,
+      Parcour_Type == "Passerelle" ~ 3,
+      TRUE ~ NA_real_
+    ),
+
+    # B. SOCIO-DEMO
+    Age = 2025 - as.numeric(year_of_birth),
+    Homme = case_when(
+      str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1,
+      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0,
+      TRUE ~ NA_real_
+    ),
+    Mention_TBB = case_when(
+      mention_bac %in% c("TB", "B") ~ 1,
+      TRUE ~ 0
+    ),
+
+    # --- NOUVELLE VARIABLE : NIVEAU D'ÉTUDES PARENTAL ---
+    # On attribue un score : 1 (<=BAC), 2 (BAC1-3), 3 (>BAC3)
+    p1_s = case_when(
+      study_parent1 == ">BAC3" ~ 3, 
+      study_parent1 == "BAC1-3" ~ 2, 
+      TRUE ~ 1
+    ),
+    p2_s = case_when(
+      study_parent2 == ">BAC3" ~ 3, 
+      study_parent2 == "BAC1-3" ~ 2, 
+      TRUE ~ 1
+    ),
+    # On garde le maximum des deux parents
+    niveau_etude_parental = pmax(p1_s, p2_s),
+    
+    # C. FACULTE (Effet aléatoire)
+    faculte_nom = str_to_title(str_trim(current_fac)),
+    Faculte = case_when(
+      str_detect(faculte_nom, regex("Marseille|Aix", ignore_case = TRUE)) ~ 0,
+      str_detect(faculte_nom, regex("Brest", ignore_case = TRUE)) ~ 1,
+      str_detect(faculte_nom, regex("Clermont", ignore_case = TRUE)) ~ 2,
+      str_detect(faculte_nom, regex("Lille", ignore_case = TRUE)) ~ 3,
+      str_detect(faculte_nom, regex("Lyon|Claude", ignore_case = TRUE)) ~ 4,
+      str_detect(faculte_nom, regex("Montpellier", ignore_case = TRUE)) ~ 5,
+      str_detect(faculte_nom, regex("Nancy", ignore_case = TRUE)) ~ 6,
+      str_detect(faculte_nom, regex("Nantes", ignore_case = TRUE)) ~ 7,
+      str_detect(faculte_nom, regex("Nice", ignore_case = TRUE)) ~ 8,
+      str_detect(faculte_nom, regex("Paris|Montrouge", ignore_case = TRUE)) ~ 9,
+      str_detect(faculte_nom, regex("Reims", ignore_case = TRUE)) ~ 10,
+      str_detect(faculte_nom, regex("Rennes", ignore_case = TRUE)) ~ 11,
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) ~ 12,
+      str_detect(faculte_nom, regex("Toulouse", ignore_case = TRUE)) ~ 13,
+      TRUE ~ NA_real_
+    ),
+    
+    # D. SVO ANGLE (Variable dépendante)
+    SVO_angle_num = as.numeric(gsub(",", ".", SVO_angle))
+  )
+
+```
+
+
+Regression SVO_angle sans mention ni niveau d'études des parents
+
+```{r}
+summary(lmer(SVO_angle_num ~ factor(Parcour) + Age + factor(Homme) + (1 | Faculte), data = df_final))
+```
+
+
+REGRESSION SVO_angle avec mention TBB
+
+```{r}
+summary(lmer(SVO_angle_num ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme) + (1 | Faculte), data = df_final))
+```
+
+
+
+INTRODUCTION du niveau d'études des parents
+
+```{r}
+summary(lmer(SVO_angle_num ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme) + factor(niveau_etude_parental) + (1 | Faculte), data = df_final))
+```
+
+Utilisons df_clean_v2 pour la regression sur la prise de risque
+
+```{r}
+view(df_clean_v2)
+```
+
+ICI J ATOUTE DES VARIABLES EXPLICATIVES A LA BASE NETTOYE df_clean_v2
+
+```{r}
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+
+df_reg <- df_clean_v2 %>%
+  mutate(
+    # A. VARIABLES DÉPENDANTES (Prise de risque)
+    risk_self = as.numeric(gsub(",", ".", BRET_self)),
+    risk_else = as.numeric(gsub(",", ".", BRET_other)),
+    altruist_cg = risk_self - risk_else,
+    
+    # B. SOCIO-DÉMO & PARCOURS
+    Age = 2026 - as.numeric(year_of_birth),
+    Homme = ifelse(tolower(gender) == "male", 1, 0),
+    Mention_TBB = ifelse(mention_bac %in% c("TB", "B"), 1, 0),
+    
+    Parcour = case_when(
+      origin_study == "LAS" ~ 0,
+      origin_study == "PACES" ~ 1,
+      origin_study == "PASS" ~ 2,
+      origin_study == "Passerelle" ~ 3,
+      TRUE ~ NA_real_
+    ),
+    
+    # C. FACULTE (Effet aléatoire avec ton codage)
+    faculte_nom = str_to_title(str_trim(current_fac)),
+    Faculte = case_when(
+      str_detect(faculte_nom, regex("Marseille|Aix", ignore_case = TRUE)) ~ 0,
+      str_detect(faculte_nom, regex("Brest", ignore_case = TRUE)) ~ 1,
+      str_detect(faculte_nom, regex("Clermont", ignore_case = TRUE)) ~ 2,
+      str_detect(faculte_nom, regex("Lille", ignore_case = TRUE)) ~ 3,
+      str_detect(faculte_nom, regex("Lyon|Claude", ignore_case = TRUE)) ~ 4,
+      str_detect(faculte_nom, regex("Montpellier", ignore_case = TRUE)) ~ 5,
+      str_detect(faculte_nom, regex("Nancy", ignore_case = TRUE)) ~ 6,
+      str_detect(faculte_nom, regex("Nantes", ignore_case = TRUE)) ~ 7,
+      str_detect(faculte_nom, regex("Nice", ignore_case = TRUE)) ~ 8,
+      str_detect(faculte_nom, regex("Paris|Montrouge", ignore_case = TRUE)) ~ 9,
+      str_detect(faculte_nom, regex("Reims", ignore_case = TRUE)) ~ 10,
+      str_detect(faculte_nom, regex("Rennes", ignore_case = TRUE)) ~ 11,
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) ~ 12,
+      str_detect(faculte_nom, regex("Toulouse", ignore_case = TRUE)) ~ 13,
+      TRUE ~ NA_real_
+    ),
+    
+    # D. NIVEAU PARENTAL
+    p1_s = case_when(study_parent1 == ">BAC3" ~ 3, study_parent1 == "BAC1-3" ~ 2, TRUE ~ 1),
+    p2_s = case_when(study_parent2 == ">BAC3" ~ 3, study_parent2 == "BAC1-3" ~ 2, TRUE ~ 1),
+    niveau_etude_parental = pmax(p1_s, p2_s, na.rm = TRUE)
+  )
+```
+
+
+Regression avec risk_sel, base nettoyé et réduite (df_reg) mention
+
+```{r}
+summary(lmer(risk_self ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme)+ (1 | Faculte), data = df_reg))
+```
+
+
+```{r}
+summary(lmer(risk_self ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme) + factor(niveau_etude_parental) + (1 | Faculte), data = df_reg))
+```
+
+regression avec risk_else, base nettoyée (df_reg), mention,niveau d'étude parent
+
+```{r}
+summary(lmer(risk_self ~ factor(Parcour) + Age + factor(Homme) + (1 | Faculte), data = df_reg))
+```
+
+
+
+
+
