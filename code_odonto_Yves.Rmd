@@ -1,0 +1,132 @@
+---
+title: "Code_R_Odonto"
+author: "Aminata_Diaw"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# --- 1. CONFIGURATION ET CHARGEMENT ---
+library(tidyverse)
+library(gtsummary)
+library(flextable)
+library(officer)
+
+# Lecture des données
+df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+```
+
+
+```{r}
+# --- CRÉATION DE LA BASE DE DONNÉES FINALE (df_final) ---
+df_final <- df %>%
+  mutate(
+    # ==========================================
+    # 1. VILLES ET PARCOURS
+    # ==========================================
+    faculte_nom = str_to_title(str_trim(current_fac)),
+    Faculte = case_when(
+      str_detect(faculte_nom, regex("Marseille|Aix", ignore_case = TRUE)) ~ 0,
+      str_detect(faculte_nom, regex("Brest", ignore_case = TRUE)) ~ 1,
+      str_detect(faculte_nom, regex("Clermont", ignore_case = TRUE)) ~ 2,
+      str_detect(faculte_nom, regex("Lille", ignore_case = TRUE)) ~ 3,
+      str_detect(faculte_nom, regex("Lyon|Claude", ignore_case = TRUE)) ~ 4,
+      str_detect(faculte_nom, regex("Montpellier", ignore_case = TRUE)) ~ 5,
+      str_detect(faculte_nom, regex("Nancy", ignore_case = TRUE)) ~ 6,
+      str_detect(faculte_nom, regex("Nantes", ignore_case = TRUE)) ~ 7,
+      str_detect(faculte_nom, regex("Nice", ignore_case = TRUE)) ~ 8,
+      str_detect(faculte_nom, regex("Paris|Montrouge", ignore_case = TRUE)) ~ 9,
+      str_detect(faculte_nom, regex("Reims", ignore_case = TRUE)) ~ 10,
+      str_detect(faculte_nom, regex("Rennes", ignore_case = TRUE)) ~ 11,
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) ~ 12,
+      str_detect(faculte_nom, regex("Toulouse", ignore_case = TRUE)) ~ 13,
+      TRUE ~ NA_real_
+    ),
+
+    Parcour_Type = case_when(
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) & 
+      (is.na(origin_study) | str_detect(origin_study, regex("Autre", ignore_case = TRUE))) ~ "LAS",
+      str_detect(origin_study, "PACES") ~ "PACES",
+      str_detect(origin_study, "PASS") ~ "PASS",
+      str_detect(origin_study, "LAS") ~ "LAS",
+      str_detect(origin_study, "Passerelle") ~ "Passerelle",
+      TRUE ~ "Autre"
+    ),
+    Parcour = case_when(
+      Parcour_Type == "LAS" ~ 0,
+      Parcour_Type == "PACES" ~ 1,
+      Parcour_Type == "PASS" ~ 2,
+      Parcour_Type == "Passerelle" ~ 3,
+      TRUE ~ NA_real_
+    ),
+
+    # ==========================================
+    # 2. DÉMOGRAPHIE & SCOLARITÉ
+    # ==========================================
+    Age = 2025 - as.numeric(year_of_birth),
+    
+    Homme = case_when(
+      str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1,
+      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0,
+      TRUE ~ NA_real_
+    ),
+    
+    # Mentions au bac
+    Mention_TB = case_when(mention_bac == "TB" ~ 1, TRUE ~ 0),
+    Mention_TBB = case_when(mention_bac %in% c("TB", "B") ~ 1, TRUE ~ 0),
+
+    # ==========================================
+    # 3. CAPITAUX (Culturel, Financier, Médical)
+    # ==========================================
+    # a. Nettoyage des zéros ("Ne sait pas / Non concerné")
+    k_cult_clean = na_if(as.numeric(K_culture), 0),
+    k_fin_clean = na_if(as.numeric(K_finance), 0),
+    k_med_clean = na_if(as.numeric(K_med), 0),
+
+    # b. Variables composites socio-économiques et médicales
+    milieu_favorise = case_when(
+      k_cult_clean >= 4 & k_fin_clean >= 4 ~ 1,  # Binaire : Fort capital ET très aisé
+      is.na(k_cult_clean) | is.na(k_fin_clean) ~ NA_real_,
+      TRUE ~ 0
+    ),
+    score_socio_eco = (k_cult_clean + k_fin_clean) / 2, # Continu (Moyenne)
+    
+    reseau_medical_fort = case_when(
+      k_med_clean >= 4 ~ 1, # Binaire : Liens médicaux importants
+      k_med_clean <= 3 ~ 0,
+      TRUE ~ NA_real_
+    ),
+
+    # c. Niveau d'études des parents
+    p1_s = case_when(study_parent1 == ">BAC3" ~ 3, study_parent1 == "BAC1-3" ~ 2, TRUE ~ 1),
+    p2_s = case_when(study_parent2 == ">BAC3" ~ 3, study_parent2 == "BAC1-3" ~ 2, TRUE ~ 1),
+    niveau_etude_parental = pmax(p1_s, p2_s, na.rm = TRUE), # Score continu max des deux
+    
+    un_sup_lic = case_when(study_parent1 == ">BAC3" | study_parent2 == ">BAC3" ~ 1, TRUE ~ 0),
+    deux_supBAC = case_when(study_parent1 %in% c(">BAC3", "BAC1-3") & study_parent2 %in% c(">BAC3", "BAC1-3") ~ 1, TRUE ~ 0),
+
+    # ==========================================
+    # 4. VARIABLES DÉPENDANTES (Tests & Psycho)
+    # ==========================================
+    # Altruisme SVO et Conformisme
+    SVO_angle_num = as.numeric(str_replace(as.character(SVO_angle), ",", ".")),
+    cg_conform = case_when(CG_X == "A" & CG_Y == "B" ~ 1, TRUE ~ 0),
+
+    # --- E. VARIABLES EMPATHIE (Cas Clinique) ---
+    # Conversion en numérique puis seuil >= 3
+    # J'utilise case_when pour être raccord avec le style tidyverse, mais la logique est strictement identique à votre ifelse
+    empathie18b = case_when(as.numeric(as.character(cc_Q18b)) >= 3 ~ 1, TRUE ~ 0),
+    empathie18c = case_when(as.numeric(as.character(cc_Q18c)) >= 3 ~ 1, TRUE ~ 0),
+
+    # Prise de risque expérimentale (Jeu BRET)
+    risk_self = as.numeric(str_replace(as.character(BRET_self), ",", ".")),
+    risk_else = as.numeric(str_replace(as.character(BRET_other), ",", ".")),
+    altruist_cg = risk_self - risk_else # Altruisme comportemental
+  )
+```
+

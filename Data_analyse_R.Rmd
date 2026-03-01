@@ -26,7 +26,7 @@ library(broom.helpers) # Aide pour les modèles
 
 # Définition du thème pour les graphiques
 theme_set(theme_minimal())
-rm(list=ls()) # Nettoyage de l'environnement
+##rm(list=ls()) # Nettoyage de l'environnement
 
 ```
 
@@ -743,11 +743,6 @@ df_final <- df %>%
 glimpse(df_final %>% select(Parcour, Faculte, Age, Homme, Mention_TBB, SVO_angle_num, SVO_Prosocial, empathie18b))
 ```
 
-LES REGRESSIONS
-
-```{r}
-
-```
 
 
 
@@ -824,6 +819,8 @@ tbl_final <- tbl_merge(
 # Affichage
 print(tbl_final)
 ```
+
+
 Reprise des anciens regressions (parcour, mentionBB, age, Homme)
 ```{r}
 summary(lmer(as.numeric(gsub(",", ".", SVO_angle)) ~ factor(Parcour) + factor(Mention_TBB) + Age + factor(Homme) + (1 | Promo), data = df_final))
@@ -929,6 +926,8 @@ df_final <- df %>%
 ```
 
 
+
+
 Regression SVO_angle sans mention ni niveau d'études des parents
 
 ```{r}
@@ -1011,6 +1010,108 @@ df_reg <- df_clean_v2 %>%
 ```
 
 
+
+Recréation de cg conforme dans df_final
+
+```{r}
+# --- 1. CONFIGURATION ---
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+
+# Chargement
+tryCatch({
+  df <- read_csv2("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+}, error = function(e) {
+  df <- read_csv("data_odonto_all.csv", locale = locale(encoding = "Latin1"))
+})
+
+# --- 2. CRÉATION DES VARIABLES ---
+df_final <- df %>%
+  mutate(
+    # A. PARCOURS (LAS référence = 0)
+    Parcour_Type = case_when(
+      str_detect(current_fac, regex("Strasbourg", ignore_case = TRUE)) & 
+      (is.na(origin_study) | str_detect(origin_study, regex("Autre", ignore_case = TRUE))) ~ "LAS",
+      str_detect(origin_study, "PACES") ~ "PACES",
+      str_detect(origin_study, "PASS") ~ "PASS",
+      str_detect(origin_study, "LAS") ~ "LAS",
+      str_detect(origin_study, "Passerelle") ~ "Passerelle",
+      TRUE ~ "Autre"
+    ),
+    Parcour = case_when(
+      Parcour_Type == "LAS" ~ 0,
+      Parcour_Type == "PACES" ~ 1,
+      Parcour_Type == "PASS" ~ 2,
+      Parcour_Type == "Passerelle" ~ 3,
+      TRUE ~ NA_real_
+    ),
+
+    # B. SOCIO-DEMO
+    Age = 2025 - as.numeric(year_of_birth),
+    Homme = case_when(
+      str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1,
+      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0,
+      TRUE ~ NA_real_
+    ),
+    Mention_TBB = case_when(
+      mention_bac %in% c("TB", "B") ~ 1,
+      TRUE ~ 0
+    ),
+
+    # --- NIVEAU D'ÉTUDES PARENTAL ---
+    # On attribue un score : 1 (<=BAC), 2 (BAC1-3), 3 (>BAC3)
+    p1_s = case_when(
+      study_parent1 == ">BAC3" ~ 3, 
+      study_parent1 == "BAC1-3" ~ 2, 
+      TRUE ~ 1
+    ),
+    p2_s = case_when(
+      study_parent2 == ">BAC3" ~ 3, 
+      study_parent2 == "BAC1-3" ~ 2, 
+      TRUE ~ 1
+    ),
+    # On garde le maximum des deux parents
+    niveau_etude_parental = pmax(p1_s, p2_s),
+    
+    # C. FACULTE (Effet aléatoire)
+    faculte_nom = str_to_title(str_trim(current_fac)),
+    Faculte = case_when(
+      str_detect(faculte_nom, regex("Marseille|Aix", ignore_case = TRUE)) ~ 0,
+      str_detect(faculte_nom, regex("Brest", ignore_case = TRUE)) ~ 1,
+      str_detect(faculte_nom, regex("Clermont", ignore_case = TRUE)) ~ 2,
+      str_detect(faculte_nom, regex("Lille", ignore_case = TRUE)) ~ 3,
+      str_detect(faculte_nom, regex("Lyon|Claude", ignore_case = TRUE)) ~ 4,
+      str_detect(faculte_nom, regex("Montpellier", ignore_case = TRUE)) ~ 5,
+      str_detect(faculte_nom, regex("Nancy", ignore_case = TRUE)) ~ 6,
+      str_detect(faculte_nom, regex("Nantes", ignore_case = TRUE)) ~ 7,
+      str_detect(faculte_nom, regex("Nice", ignore_case = TRUE)) ~ 8,
+      str_detect(faculte_nom, regex("Paris|Montrouge", ignore_case = TRUE)) ~ 9,
+      str_detect(faculte_nom, regex("Reims", ignore_case = TRUE)) ~ 10,
+      str_detect(faculte_nom, regex("Rennes", ignore_case = TRUE)) ~ 11,
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) ~ 12,
+      str_detect(faculte_nom, regex("Toulouse", ignore_case = TRUE)) ~ 13,
+      TRUE ~ NA_real_
+    ),
+    
+    # D. SVO ANGLE (Variable dépendante)
+    SVO_angle_num = as.numeric(gsub(",", ".", SVO_angle)),
+
+    # --- NOUVELLE VARIABLE : CONFORMISME CLINIQUE (CG_CONFORM) ---
+    cg_conform = case_when(
+      CG_X == "A" & CG_Y == "B" ~ 1,
+      TRUE ~ 0
+    )
+  )
+```
+
+
+
+```{r}
+
+```
+
+
 Regression avec risk_sel, base nettoyé et réduite (df_reg) mention
 
 ```{r}
@@ -1026,6 +1127,159 @@ regression avec risk_else, base nettoyée (df_reg), mention,niveau d'étude pare
 
 ```{r}
 summary(lmer(risk_self ~ factor(Parcour) + Age + factor(Homme) + (1 | Faculte), data = df_reg))
+```
+
+```{r}
+view(df_final)
+```
+
+
+```{r}
+summary(glmer(cg_conform ~ factor(Parcour) + Age + factor(Homme) + (1 | Faculte), 
+              data = df_final, 
+              family = binomial(link = "logit")))
+```
+
+Création des variables à partir des caractéristiques (culturelle, financière,lien du milieu professionnel avec le milieu médical)
+```{r}
+# --- CRÉATION DE LA BASE DE DONNÉES FINALE (df_final) ---
+df_final <- df %>%
+  mutate(
+    # ==========================================
+    # 1. VILLES ET PARCOURS
+    # ==========================================
+    faculte_nom = str_to_title(str_trim(current_fac)),
+    Faculte = case_when(
+      str_detect(faculte_nom, regex("Marseille|Aix", ignore_case = TRUE)) ~ 0,
+      str_detect(faculte_nom, regex("Brest", ignore_case = TRUE)) ~ 1,
+      str_detect(faculte_nom, regex("Clermont", ignore_case = TRUE)) ~ 2,
+      str_detect(faculte_nom, regex("Lille", ignore_case = TRUE)) ~ 3,
+      str_detect(faculte_nom, regex("Lyon|Claude", ignore_case = TRUE)) ~ 4,
+      str_detect(faculte_nom, regex("Montpellier", ignore_case = TRUE)) ~ 5,
+      str_detect(faculte_nom, regex("Nancy", ignore_case = TRUE)) ~ 6,
+      str_detect(faculte_nom, regex("Nantes", ignore_case = TRUE)) ~ 7,
+      str_detect(faculte_nom, regex("Nice", ignore_case = TRUE)) ~ 8,
+      str_detect(faculte_nom, regex("Paris|Montrouge", ignore_case = TRUE)) ~ 9,
+      str_detect(faculte_nom, regex("Reims", ignore_case = TRUE)) ~ 10,
+      str_detect(faculte_nom, regex("Rennes", ignore_case = TRUE)) ~ 11,
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) ~ 12,
+      str_detect(faculte_nom, regex("Toulouse", ignore_case = TRUE)) ~ 13,
+      TRUE ~ NA_real_
+    ),
+
+    Parcour_Type = case_when(
+      str_detect(faculte_nom, regex("Strasbourg", ignore_case = TRUE)) & 
+      (is.na(origin_study) | str_detect(origin_study, regex("Autre", ignore_case = TRUE))) ~ "LAS",
+      str_detect(origin_study, "PACES") ~ "PACES",
+      str_detect(origin_study, "PASS") ~ "PASS",
+      str_detect(origin_study, "LAS") ~ "LAS",
+      str_detect(origin_study, "Passerelle") ~ "Passerelle",
+      TRUE ~ "Autre"
+    ),
+    Parcour = case_when(
+      Parcour_Type == "LAS" ~ 0,
+      Parcour_Type == "PACES" ~ 1,
+      Parcour_Type == "PASS" ~ 2,
+      Parcour_Type == "Passerelle" ~ 3,
+      TRUE ~ NA_real_
+    ),
+
+    # ==========================================
+    # 2. DÉMOGRAPHIE & SCOLARITÉ
+    # ==========================================
+    Age = 2025 - as.numeric(year_of_birth),
+    
+    Homme = case_when(
+      str_detect(gender, regex("^Male$", ignore_case = TRUE)) ~ 1,
+      str_detect(gender, regex("Female", ignore_case = TRUE)) ~ 0,
+      TRUE ~ NA_real_
+    ),
+    
+    # Mentions au bac
+    Mention_TB = case_when(mention_bac == "TB" ~ 1, TRUE ~ 0),
+    Mention_TBB = case_when(mention_bac %in% c("TB", "B") ~ 1, TRUE ~ 0),
+
+    # ==========================================
+    # 3. CAPITAUX (Culturel, Financier, Médical)
+    # ==========================================
+    # a. Nettoyage des zéros ("Ne sait pas / Non concerné")
+    k_cult_clean = na_if(as.numeric(K_culture), 0),
+    k_fin_clean = na_if(as.numeric(K_finance), 0),
+    k_med_clean = na_if(as.numeric(K_med), 0),
+
+    # b. Variables composites socio-économiques et médicales
+    milieu_favorise = case_when(
+      k_cult_clean >= 4 & k_fin_clean >= 4 ~ 1,  # Binaire : Fort capital ET très aisé
+      is.na(k_cult_clean) | is.na(k_fin_clean) ~ NA_real_,
+      TRUE ~ 0
+    ),
+    score_socio_eco = (k_cult_clean + k_fin_clean) / 2, # Continu (Moyenne)
+    
+    reseau_medical_fort = case_when(
+      k_med_clean >= 4 ~ 1, # Binaire : Liens médicaux importants
+      k_med_clean <= 3 ~ 0,
+      TRUE ~ NA_real_
+    ),
+
+    # c. Niveau d'études des parents
+    p1_s = case_when(study_parent1 == ">BAC3" ~ 3, study_parent1 == "BAC1-3" ~ 2, TRUE ~ 1),
+    p2_s = case_when(study_parent2 == ">BAC3" ~ 3, study_parent2 == "BAC1-3" ~ 2, TRUE ~ 1),
+    niveau_etude_parental = pmax(p1_s, p2_s, na.rm = TRUE), # Score continu max des deux
+    
+    un_sup_lic = case_when(study_parent1 == ">BAC3" | study_parent2 == ">BAC3" ~ 1, TRUE ~ 0),
+    deux_supBAC = case_when(study_parent1 %in% c(">BAC3", "BAC1-3") & study_parent2 %in% c(">BAC3", "BAC1-3") ~ 1, TRUE ~ 0),
+
+    # ==========================================
+    # 4. VARIABLES DÉPENDANTES (Tests & Psycho)
+    # ==========================================
+    # Altruisme SVO et Conformisme
+    SVO_angle_num = as.numeric(str_replace(as.character(SVO_angle), ",", ".")),
+    cg_conform = case_when(CG_X == "A" & CG_Y == "B" ~ 1, TRUE ~ 0),
+
+    # --- E. VARIABLES EMPATHIE (Cas Clinique) ---
+    # Conversion en numérique puis seuil >= 3
+    # J'utilise case_when pour être raccord avec le style tidyverse, mais la logique est strictement identique à votre ifelse
+    empathie18b = case_when(as.numeric(as.character(cc_Q18b)) >= 3 ~ 1, TRUE ~ 0),
+    empathie18c = case_when(as.numeric(as.character(cc_Q18c)) >= 3 ~ 1, TRUE ~ 0),
+
+    # Prise de risque expérimentale (Jeu BRET)
+    risk_self = as.numeric(str_replace(as.character(BRET_self), ",", ".")),
+    risk_else = as.numeric(str_replace(as.character(BRET_other), ",", ".")),
+    altruist_cg = risk_self - risk_else # Altruisme comportemental
+  )
+```
+
+
+```{r}
+# Régression sur le SVO
+M_socio_eco <- lmer(SVO_angle_num ~ factor(Parcour) + Age + factor(Homme) + factor(Mention_TBB)+ factor(niveau_etude_parental) + factor(reseau_medical_fort) +  score_socio_eco + (1 | Faculte), data = df_final)
+
+summary(M_socio_eco)
+```
+
+```{r}
+# Régression sur le SVO
+M_reseau_med <- lmer(SVO_angle_num ~ factor(Parcour) + Age + factor(Homme) + score_socio_eco + factor(reseau_medical_fort) + (1 | Faculte), data = df_final)
+
+summary(M_reseau_med)
+```
+
+régression avec capital socioéconomique binarisé(ceux qui viennent de milieu favorisé contre ceux qui viennent de milieu défavorisé)
+
+```{r}
+# Régression sur le SVO du capital socioéconomique binaire
+M_milieu_fav <- lmer(SVO_angle_num ~ factor(Parcour) + Age + factor(Homme) + factor(Mention_TBB) + factor(niveau_etude_parental) + factor(milieu_favorise) + (1 | Faculte), data = df_final)
+
+summary(M_milieu_fav)
+```
+
+
+Régression empathie18b, empathie18c, JSE, SPS, CC,PT
+
+```{r}
+JSE_model <- lmer(JSE ~ factor(Parcour) + Age + factor(Homme) + factor(Mention_TBB) + factor(niveau_etude_parental) + (1 | Faculte), data = df_final)
+
+summary(JSE_model)
 ```
 
 

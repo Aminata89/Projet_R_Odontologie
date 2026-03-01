@@ -9,5 +9,5 @@
 "0",""
 "0","# Définition du thème pour les graphiques"
 "0","theme_set(theme_minimal())"
-"0","rm(list=ls()) # Nettoyage de l'environnement"
+"0","##rm(list=ls()) # Nettoyage de l'environnement"
 "0",""
